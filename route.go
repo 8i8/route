@@ -108,7 +108,7 @@ func (g *Group) compose() *Group {
 		if g.Mux == nil {
 			// No server just yet, we need to replace the function with its
 			// wrapped replacement.
-			g.routes[i].handlerFunc = hFunc
+			g.routes[reverseIndex].handlerFunc = hFunc
 		} else {
 			// This is the final compilation, add the HandlerFunc to the server.
 			g.Mux.HandleFunc(path, hFunc)
