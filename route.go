@@ -177,13 +177,6 @@ func (g *Group) Handle(h ...any) *Group {
 			offset++
 			t = t.compose()
 			g.routes = append(g.routes, t.routes...)
-		case string:
-			// Strings must be first of a pair
-			if (i+offset)%2 != 0 {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
-				exit(1)
-			}
-			path = t
 		case http.HandlerFunc:
 			if t == nil {
 				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilHandlerFunc))
@@ -210,6 +203,14 @@ func (g *Group) Handle(h ...any) *Group {
 				exit(1)
 			}
 			g.routes = append(g.routes, route{path, t})
+		// Test for string last, a typed string might implement ServeHTTP
+		case string:
+			// Strings must be first of a pair
+			if (i+offset)%2 != 0 {
+				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
+				exit(1)
+			}
+			path = t
 		default:
 			_ = log.Output(2, fmt.Sprintf("%s:%s:%s", fname(), errSwitchDefault, what(t)))
 			exit(1)
