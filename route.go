@@ -24,6 +24,16 @@ type route struct {
 	handlerFunc http.HandlerFunc
 }
 
+// Handle returns a route
+func Handle(path string, handle http.Handler) route {
+	return route{path, wrap(handle)}
+}
+
+// Wrap wraps a route with the provided http.HandlerFunc
+func (r route) Wrap(fn func(http.HandlerFunc) http.HandlerFunc) route {
+	return route{r.path, fn(r.handlerFunc)}
+}
+
 // Group simplifies route composition by permitting the selective and
 // collective application of middleware. Middleware once applied wraps all
 // endpoints that are applied after it. Groups can be added to groups as
