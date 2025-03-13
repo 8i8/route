@@ -30,8 +30,11 @@ func Handle(path string, handle http.Handler) route {
 }
 
 // Wrap wraps a route with the provided http.HandlerFunc
-func (r route) Wrap(fn func(http.HandlerFunc) http.HandlerFunc) route {
-	return route{r.path, fn(r.handlerFunc)}
+func (r route) Wrap(funcs ...func(http.HandlerFunc) http.HandlerFunc) route {
+	for _, fn := range funcs {
+		r.handlerFunc = fn(r.handlerFunc)
+	}
+	return route{r.path, r.handlerFunc}
 }
 
 // Group simplifies route composition by permitting the selective and
@@ -175,6 +178,9 @@ func (g *Group) Handle(h ...any) *Group {
 	var offset int
 	for i, obj := range h {
 		switch t := obj.(type) {
+		case route:
+			g.routes = append(g.routes, t)
+			offset++
 		case Group:
 			_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errGroupUsed))
 			exit(1)
