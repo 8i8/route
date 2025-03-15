@@ -18,27 +18,27 @@ import (
 
 // Router provides a collection of routes.
 type Router interface {
-	Routes() []Route
+	Routes() []route
 }
 
 // Middleware is a shorthand for func(http.Handler) http.Handler the signature
 // of route middleware.
 type Middleware func(http.Handler) http.Handler
 
-// Route comprises of a path and handler.
-type Route struct {
-	Path    string
-	Handler http.Handler
+// route comprises of a path and handler.
+type route struct {
+	path    string
+	handler http.Handler
 }
 
 // Routes enables Route to meet the Router interface.
-func (r Route) Routes() []Route {
-	return []Route{r}
+func (r route) Routes() []route {
+	return []route{r}
 }
 
-// Define returns a route.
-func Define(path string, handle http.Handler) Route {
-	return Route{path, handle}
+// Handle returns a route.
+func Handle(path string, handle http.Handler) route {
+	return route{path, handle}
 }
 
 // Wrap wraps middleware, returning a single function with all the provided
@@ -53,11 +53,11 @@ func Wrap(mw ...Middleware) Middleware {
 }
 
 // Wrap wraps a route with the provided Middleware.
-func (r Route) Wrap(funcs ...Middleware) Route {
+func (r route) Wrap(funcs ...Middleware) route {
 	for i := len(funcs) - 1; i >= 0; i-- {
-		r.Handler = funcs[i](r.Handler)
+		r.handler = funcs[i](r.handler)
 	}
-	return Route{r.Path, r.Handler}
+	return route{r.path, r.handler}
 }
 
 // Group simplifies route composition by permitting the selective and
@@ -68,7 +68,7 @@ func (r Route) Wrap(funcs ...Middleware) Route {
 type Group struct {
 	Mux    *http.ServeMux
 	mwares []Middleware
-	routes []Route
+	routes []route
 }
 
 func NewGroup() *Group {
@@ -115,12 +115,12 @@ func fname() string {
 	return parts[len(parts)-1] // Extract only the function name
 }
 
-func (g *Group) Routes() []Route {
+func (g *Group) Routes() []route {
 	for i := range g.routes {
 
 		// Reverse index to achieve first in first applied behaviour.
 		reverseIndex := len(g.routes) - 1 - i
-		handler := g.routes[reverseIndex].Handler
+		handler := g.routes[reverseIndex].handler
 		if handler == nil {
 			// nil values in nested middleware can be very tricky to deal so we
 			// get out fast and check everywhere.
@@ -141,7 +141,7 @@ func (g *Group) Routes() []Route {
 
 		// No server just yet, we need to replace the function with its
 		// wrapped replacement.
-		g.routes[reverseIndex].Handler = handler
+		g.routes[reverseIndex].handler = handler
 	}
 	return g.routes
 }
@@ -153,7 +153,7 @@ func (g *Group) Compile() *http.ServeMux {
 		g.Mux = &http.ServeMux{}
 	}
 	for _, route := range g.Routes() {
-		g.Mux.Handle(route.Path, route.Handler)
+		g.Mux.Handle(route.path, route.handler)
 	}
 	return g.Mux
 }
@@ -174,7 +174,7 @@ func (g *Group) Wrap(mw ...Middleware) *Group {
 func (g *Group) Handle(h ...Router) *Group {
 	for _, obj := range h {
 		switch t := obj.(type) {
-		case Route:
+		case route:
 			g.routes = append(g.routes, t)
 		case *Group:
 			g.routes = append(g.routes, t.Routes()...)

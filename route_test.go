@@ -12,7 +12,7 @@ func TestBasicRouteHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Hello, World!"))
 	})
-	g.Handle(Define("/hello", handler))
+	g.Handle(Handle("/hello", handler))
 
 	mux := g.Compile()
 
@@ -56,7 +56,7 @@ func TestMiddlewareApplication(t *testing.T) {
 
 	g.Wrap(addHeader, modifyBody)
 
-	g.Handle(Define("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.Handle(Handle("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("OriginalResponse"))
 	})))
 
@@ -112,7 +112,7 @@ func TestSubgroupIsolation(t *testing.T) {
 		})
 	})
 
-	sub.Handle(Define("/sub", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	sub.Handle(Handle("/sub", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write([]byte("Subgroup"))
 		if err != nil {
 			t.Errorf("error:%s", err)
