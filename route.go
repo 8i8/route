@@ -45,7 +45,7 @@ type Routable interface {
 // together routes and to wrap all routes within the group with any provided
 // middleware.
 type Group interface {
-	Compile(...Routable) *http.ServeMux
+	Compose(...Routable) *http.ServeMux
 	Add(...Routable) *group
 	Wrap(...Middleware) *group
 	Routable
@@ -156,9 +156,9 @@ func (g *group) Mux(m *http.ServeMux) {
 	g.mux = m
 }
 
-// Compile wraps all routes with the middleware and loads them into either the
+// Compose wraps all routes with the middleware and loads them into either the
 // provided multiplex server or a default http.ServeMux.
-func (g *group) Compile(routes ...Routable) *http.ServeMux {
+func (g *group) Compose(routes ...Routable) *http.ServeMux {
 	if g.mux == nil {
 		g.mux = &http.ServeMux{}
 	}

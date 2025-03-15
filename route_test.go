@@ -14,7 +14,7 @@ func TestBasicRouteHandling(t *testing.T) {
 	})
 	g.Add(Handle("/hello", handler))
 
-	mux := g.Compile()
+	mux := g.Compose()
 
 	req := httptest.NewRequest(http.MethodGet, "/hello", nil)
 	w := httptest.NewRecorder()
@@ -60,7 +60,7 @@ func TestMiddlewareApplication(t *testing.T) {
 		_, _ = w.Write([]byte("OriginalResponse"))
 	})))
 
-	mux := g.Compile()
+	mux := g.Compose()
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
@@ -103,7 +103,7 @@ func TestSubgroupIsolation(t *testing.T) {
 
 	g.Add(sub) // Add the subgroup to the main group
 
-	mux := g.Compile()
+	mux := g.Compose()
 
 	req := httptest.NewRequest(http.MethodGet, "/sub", nil)
 	w := httptest.NewRecorder()
