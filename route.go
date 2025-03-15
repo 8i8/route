@@ -16,29 +16,45 @@ import (
 	"strings"
 )
 
+var (
+	errSwitchDefault = errors.New("switch default, unknown type")
+	errNilFunc       = errors.New("nil returned from HandlerFunc in chain")
+	errFuncReturnNil = errors.New("function returned nil")
+)
+
 // Router provides a collection of routes.
 type Router interface {
-	Routes() []route
+	Routes() []Handler
+}
+
+// Group returned by NewGroup works through function composition to group
+// together routes and to wrap all routes within the group with any provided
+// middleware.
+type Group interface {
+	Compile() *http.ServeMux
+	Add(...Handler)
+	Wrap(...Middleware)
+	Router
 }
 
 // Middleware is a shorthand for func(http.Handler) http.Handler the signature
 // of route middleware.
 type Middleware func(http.Handler) http.Handler
 
-// route comprises of a path and handler.
-type route struct {
-	path    string
-	handler http.Handler
+// Handler comprises of a path and handler defining a route.
+type Handler struct {
+	Path    string
+	Handler http.Handler
 }
 
 // Routes enables Route to meet the Router interface.
-func (r route) Routes() []route {
-	return []route{r}
+func (r Handler) Routes() []Handler {
+	return []Handler{r}
 }
 
 // Handle returns a route.
-func Handle(path string, handle http.Handler) route {
-	return route{path, handle}
+func Handle(path string, handle http.Handler) Handler {
+	return Handler{path, handle}
 }
 
 // Wrap wraps middleware, returning a single function with all the provided
@@ -53,40 +69,33 @@ func Wrap(mw ...Middleware) Middleware {
 }
 
 // Wrap wraps a route with the provided Middleware.
-func (r route) Wrap(funcs ...Middleware) route {
+func (r Handler) Wrap(funcs ...Middleware) Handler {
 	for i := len(funcs) - 1; i >= 0; i-- {
-		r.handler = funcs[i](r.handler)
+		r.Handler = funcs[i](r.Handler)
 	}
-	return route{r.path, r.handler}
+	return Handler{r.Path, r.Handler}
 }
 
-// Group simplifies route composition by permitting the selective and
+// group simplifies route composition by permitting the selective and
 // collective application of middleware. Middleware once applied wraps all
 // endpoints that are applied after it. Groups can be added to groups as
 // subgroups, enabling the selective application of middleware to subgroups
 // within a group rather than globally.
-type Group struct {
-	Mux    *http.ServeMux
+type group struct {
+	mux    *http.ServeMux
 	mwares []Middleware
-	routes []route
+	routes []Handler
 }
 
-func NewGroup() *Group {
-	return &Group{}
+// Mux sets the given *http.ServeMux as its server, use when compile is called.
+func (g *group) Mux(m *http.ServeMux) {
+	g.mux = m
 }
 
-var (
-	errHandlerUsed    = errors.New("http.Handle passed into middleware Wrap")
-	errHandleFormat   = errors.New("format err, should be (<path>, <handler>) pairs")
-	errSwitchDefault  = errors.New("switch default, unknown type")
-	errNilFunc        = errors.New("nil returned from HandlerFunc in chain")
-	errNilHandlerFunc = errors.New("nil HandlerFunc")
-	errNilHandler     = errors.New("nil http.Handler")
-	errNilMiddleware  = errors.New("nil route.Middleware")
-	errNilGroup       = errors.New("nil route.Group")
-	errFuncReturnNil  = errors.New("function returned nil")
-	errGroupUsed      = errors.New("want *route.Group not route.Group")
-)
+// NewGroup retuns a route group.
+func NewGroup(routes ...Handler) *group {
+	return &group{routes: routes}
+}
 
 // exitWithLog logs the error message and exits with code 0.
 func exitWithLog(msg string) {
@@ -115,12 +124,12 @@ func fname() string {
 	return parts[len(parts)-1] // Extract only the function name
 }
 
-func (g *Group) Routes() []route {
+func (g *group) Routes() []Handler {
 	for i := range g.routes {
 
 		// Reverse index to achieve first in first applied behaviour.
 		reverseIndex := len(g.routes) - 1 - i
-		handler := g.routes[reverseIndex].handler
+		handler := g.routes[reverseIndex].Handler
 		if handler == nil {
 			// nil values in nested middleware can be very tricky to deal so we
 			// get out fast and check everywhere.
@@ -141,42 +150,38 @@ func (g *Group) Routes() []route {
 
 		// No server just yet, we need to replace the function with its
 		// wrapped replacement.
-		g.routes[reverseIndex].handler = handler
+		g.routes[reverseIndex].Handler = handler
 	}
 	return g.routes
 }
 
 // Compile wraps all routes with the appropriate middleware and loads them all
 // into a multiplex server.
-func (g *Group) Compile() *http.ServeMux {
-	if g.Mux == nil {
-		g.Mux = &http.ServeMux{}
+func (g *group) Compile(routes ...Handler) *http.ServeMux {
+	if g.mux == nil {
+		g.mux = &http.ServeMux{}
 	}
+	g.routes = append(g.routes, routes...)
 	for _, route := range g.Routes() {
-		g.Mux.Handle(route.path, route.handler)
+		g.mux.Handle(route.Path, route.Handler)
 	}
-	return g.Mux
+	return g.mux
 }
 
 // Wrap wraps all endpoints in a Group with its provided decorators, they are
 // applied in order, first in first out.
-func (g *Group) Wrap(mw ...Middleware) *Group {
-	if mw == nil || len(mw) > 0 && mw[0] == nil {
-		exit(errNilMiddleware)
-	}
+func (g *group) Wrap(mw ...Middleware) *group {
 	g.mwares = append(g.mwares, mw...)
 	return g
 }
 
-// Handle expects either *route.Group, or string http.Handler, string
-// http.HandlerFunc pairs. Middleware applied to subgroups remains exclusive to
-// the subgroup.
-func (g *Group) Handle(h ...Router) *Group {
+// Add expects either a route.Group, or route, returned by route.Handle.
+func (g *group) Add(h ...Router) *group {
 	for _, obj := range h {
 		switch t := obj.(type) {
-		case route:
+		case Handler:
 			g.routes = append(g.routes, t)
-		case *Group:
+		case *group:
 			g.routes = append(g.routes, t.Routes()...)
 		default:
 			exit(fmt.Errorf("%T:%w", t, errSwitchDefault))

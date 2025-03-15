@@ -12,7 +12,7 @@ func TestBasicRouteHandling(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Hello, World!"))
 	})
-	g.Handle(Handle("/hello", handler))
+	g.Add(Handle("/hello", handler))
 
 	mux := g.Compile()
 
@@ -56,7 +56,7 @@ func TestMiddlewareApplication(t *testing.T) {
 
 	g.Wrap(addHeader, modifyBody)
 
-	g.Handle(Handle("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.Add(Handle("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("OriginalResponse"))
 	})))
 
@@ -83,24 +83,6 @@ func TestMiddlewareApplication(t *testing.T) {
 	}
 }
 
-func TestInvalidMiddlewareUsage(t *testing.T) {
-	g := NewGroup()
-
-	// Capture exit calls instead of actually exiting
-	var exited bool
-	exit = func(error) {
-		exited = true
-	}
-
-	// Simulating an invalid middleware
-	var badMiddleware Middleware = nil
-	g.Wrap(badMiddleware) // This should trigger a hard failure
-
-	if !exited {
-		t.Fatal("Expected os.Exit(1) to be called, but it wasn't")
-	}
-}
-
 func TestSubgroupIsolation(t *testing.T) {
 	g := NewGroup()
 	sub := NewGroup()
@@ -112,14 +94,14 @@ func TestSubgroupIsolation(t *testing.T) {
 		})
 	})
 
-	sub.Handle(Handle("/sub", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	sub.Add(Handle("/sub", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := w.Write([]byte("Subgroup"))
 		if err != nil {
 			t.Errorf("error:%s", err)
 		}
 	})))
 
-	g.Handle(sub) // Add the subgroup to the main group
+	g.Add(sub) // Add the subgroup to the main group
 
 	mux := g.Compile()
 
