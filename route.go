@@ -13,7 +13,6 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 )
 
 var (
@@ -22,8 +21,23 @@ var (
 	errFuncReturnNil = errors.New("function returned nil")
 )
 
-// Router provides a collection of routes.
-type Router interface {
+// exit func permits that the exit function be overriden during testing.
+var exit func(error)
+
+// exitWithError logs the error message and exits with code 1, opting for hard
+// exit on error as routes code is only run at startup.
+func exitWithError(err error) {
+	_, file, line, _ := runtime.Caller(1) // Get caller info
+	_ = log.Output(3, file+":"+strconv.Itoa(line)+": "+err.Error())
+	os.Exit(1)
+}
+
+func init() {
+	exit = exitWithError
+}
+
+// Routable provides a collection of routes.
+type Routable interface {
 	Routes() []Handler
 }
 
@@ -31,10 +45,10 @@ type Router interface {
 // together routes and to wrap all routes within the group with any provided
 // middleware.
 type Group interface {
-	Compile() *http.ServeMux
-	Add(...Handler)
-	Wrap(...Middleware)
-	Router
+	Compile(...Routable) *http.ServeMux
+	Add(...Routable) *group
+	Wrap(...Middleware) *group
+	Routable
 }
 
 // Middleware is a shorthand for func(http.Handler) http.Handler the signature
@@ -48,8 +62,8 @@ type Handler struct {
 }
 
 // Routes enables Route to meet the Router interface.
-func (r Handler) Routes() []Handler {
-	return []Handler{r}
+func (h Handler) Routes() []Handler {
+	return []Handler{h}
 }
 
 // Handle returns a route.
@@ -57,23 +71,12 @@ func Handle(path string, handle http.Handler) Handler {
 	return Handler{path, handle}
 }
 
-// Wrap wraps middleware, returning a single function with all the provided
-// functions chained within it, the function are reversed in order so that the first in is the first applied.
-func Wrap(mw ...Middleware) Middleware {
-	return func(next http.Handler) http.Handler {
-		for i := len(mw) - 1; i >= 0; i-- {
-			next = mw[i](next)
-		}
-		return next
-	}
-}
-
 // Wrap wraps a route with the provided Middleware.
-func (r Handler) Wrap(funcs ...Middleware) Handler {
+func (h Handler) Wrap(funcs ...Middleware) Handler {
 	for i := len(funcs) - 1; i >= 0; i-- {
-		r.Handler = funcs[i](r.Handler)
+		h.Handler = funcs[i](h.Handler)
 	}
-	return Handler{r.Path, r.Handler}
+	return Handler{h.Path, h.Handler}
 }
 
 // group simplifies route composition by permitting the selective and
@@ -87,43 +90,36 @@ type group struct {
 	routes []Handler
 }
 
-// Mux sets the given *http.ServeMux as its server, use when compile is called.
-func (g *group) Mux(m *http.ServeMux) {
-	g.mux = m
-}
-
 // NewGroup retuns a route group.
-func NewGroup(routes ...Handler) *group {
-	return &group{routes: routes}
+func NewGroup(routes ...Routable) *group {
+	g := &group{}
+	g = g.Add(routes...)
+	return g
 }
 
-// exitWithLog logs the error message and exits with code 0.
-func exitWithLog(msg string) {
-	_, file, line, _ := runtime.Caller(1) // Get caller info
-	_ = log.Output(3, file+":"+strconv.Itoa(line)+": "+msg)
-	os.Exit(0)
+// Add adds Routables, either route.Group's or route.Handler's to the group.
+func (g *group) Add(h ...Routable) *group {
+	for _, obj := range h {
+		switch t := obj.(type) {
+		case Handler:
+			g.routes = append(g.routes, t)
+		case *group:
+			g.routes = append(g.routes, t.Routes()...)
+		default:
+			exit(fmt.Errorf("%T:%w", t, errSwitchDefault))
+		}
+	}
+	return g
 }
 
-// exitWithError logs the error message and exits with code 1.
-func exitWithError(err error) {
-	_, file, line, _ := runtime.Caller(1) // Get caller info
-	_ = log.Output(3, file+":"+strconv.Itoa(line)+": "+err.Error())
-	os.Exit(1)
+// Wrap wraps all endpoints in a Group with its provided decorators, they are
+// applied in order, first in first out.
+func (g *group) Wrap(mw ...Middleware) *group {
+	g.mwares = append(g.mwares, mw...)
+	return g
 }
 
-var exit func(error)
-
-func init() {
-	exit = exitWithError
-}
-
-func fname() string {
-	pc, _, _, _ := runtime.Caller(1)
-	fullName := runtime.FuncForPC(pc).Name()
-	parts := strings.Split(fullName, ".")
-	return parts[len(parts)-1] // Extract only the function name
-}
-
+// Routes returns the routes within a route group with all middleware applied.
 func (g *group) Routes() []Handler {
 	for i := range g.routes {
 
@@ -155,37 +151,20 @@ func (g *group) Routes() []Handler {
 	return g.routes
 }
 
-// Compile wraps all routes with the appropriate middleware and loads them all
-// into a multiplex server.
-func (g *group) Compile(routes ...Handler) *http.ServeMux {
+// Mux sets the given *http.ServeMux as its server, use when compile is called.
+func (g *group) Mux(m *http.ServeMux) {
+	g.mux = m
+}
+
+// Compile wraps all routes with the middleware and loads them into either the
+// provided multiplex server or a default http.ServeMux.
+func (g *group) Compile(routes ...Routable) *http.ServeMux {
 	if g.mux == nil {
 		g.mux = &http.ServeMux{}
 	}
-	g.routes = append(g.routes, routes...)
+	g = g.Add(routes...)
 	for _, route := range g.Routes() {
 		g.mux.Handle(route.Path, route.Handler)
 	}
 	return g.mux
-}
-
-// Wrap wraps all endpoints in a Group with its provided decorators, they are
-// applied in order, first in first out.
-func (g *group) Wrap(mw ...Middleware) *group {
-	g.mwares = append(g.mwares, mw...)
-	return g
-}
-
-// Add expects either a route.Group, or route, returned by route.Handle.
-func (g *group) Add(h ...Router) *group {
-	for _, obj := range h {
-		switch t := obj.(type) {
-		case Handler:
-			g.routes = append(g.routes, t)
-		case *group:
-			g.routes = append(g.routes, t.Routes()...)
-		default:
-			exit(fmt.Errorf("%T:%w", t, errSwitchDefault))
-		}
-	}
-	return g
 }
