@@ -8,10 +8,11 @@ import (
 
 func TestBasicRouteHandling(t *testing.T) {
 	g := NewGroup()
-	g.Handle("/hello", func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Hello, World!"))
 	})
+	g.Handle(Define("/hello", handler))
 
 	mux := g.Compile()
 
@@ -38,26 +39,26 @@ func TestMiddlewareApplication(t *testing.T) {
 	g := NewGroup()
 
 	// Middleware that adds a header
-	addHeader := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	addHeader := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Custom-Header", "MiddlewareApplied")
-			next(w, r)
-		}
+			next.ServeHTTP(w, r)
+		})
 	}
 
 	// Middleware that modifies response body
-	modifyBody := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	modifyBody := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte("Modified: "))
-			next(w, r)
-		}
+			next.ServeHTTP(w, r)
+		})
 	}
 
 	g.Wrap(addHeader, modifyBody)
 
-	g.Handle("/test", func(w http.ResponseWriter, r *http.Request) {
+	g.Handle(Define("/test", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("OriginalResponse"))
-	})
+	})))
 
 	mux := g.Compile()
 
@@ -87,7 +88,7 @@ func TestInvalidMiddlewareUsage(t *testing.T) {
 
 	// Capture exit calls instead of actually exiting
 	var exited bool
-	exit = func(int) {
+	exit = func(error) {
 		exited = true
 	}
 
@@ -104,16 +105,19 @@ func TestSubgroupIsolation(t *testing.T) {
 	g := NewGroup()
 	sub := NewGroup()
 
-	sub.Wrap(func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
+	sub.Wrap(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Subgroup", "Applied")
-			next(w, r)
-		}
+			next.ServeHTTP(w, r)
+		})
 	})
 
-	sub.Handle("/sub", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Subgroup"))
-	})
+	sub.Handle(Define("/sub", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, err := w.Write([]byte("Subgroup"))
+		if err != nil {
+			t.Errorf("error:%s", err)
+		}
+	})))
 
 	g.Handle(sub) // Add the subgroup to the main group
 

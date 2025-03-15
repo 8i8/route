@@ -12,29 +12,52 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
-// Middleware are functions that receive and return an http.HandlerFunc
-type Middleware func(http.HandlerFunc) http.HandlerFunc
-
-// route comprises of a path and HandlerFunc.
-type route struct {
-	path        string
-	handlerFunc http.HandlerFunc
+// Router provides a collection of routes.
+type Router interface {
+	Routes() []Route
 }
 
-// Handle returns a route
-func Handle(path string, handle http.Handler) route {
-	return route{path, wrap(handle)}
+// Middleware is a shorthand for func(http.Handler) http.Handler the signature
+// of route middleware.
+type Middleware func(http.Handler) http.Handler
+
+// Route comprises of a path and handler.
+type Route struct {
+	Path    string
+	Handler http.Handler
 }
 
-// Wrap wraps a route with the provided http.HandlerFunc
-func (r route) Wrap(funcs ...func(http.HandlerFunc) http.HandlerFunc) route {
-	for _, fn := range funcs {
-		r.handlerFunc = fn(r.handlerFunc)
+// Routes enables Route to meet the Router interface.
+func (r Route) Routes() []Route {
+	return []Route{r}
+}
+
+// Define returns a route.
+func Define(path string, handle http.Handler) Route {
+	return Route{path, handle}
+}
+
+// Wrap wraps middleware, returning a single function with all the provided
+// functions chained within it, the function are reversed in order so that the first in is the first applied.
+func Wrap(mw ...Middleware) Middleware {
+	return func(next http.Handler) http.Handler {
+		for i := len(mw) - 1; i >= 0; i-- {
+			next = mw[i](next)
+		}
+		return next
 	}
-	return route{r.path, r.handlerFunc}
+}
+
+// Wrap wraps a route with the provided Middleware.
+func (r Route) Wrap(funcs ...Middleware) Route {
+	for i := len(funcs) - 1; i >= 0; i-- {
+		r.Handler = funcs[i](r.Handler)
+	}
+	return Route{r.Path, r.Handler}
 }
 
 // Group simplifies route composition by permitting the selective and
@@ -45,7 +68,7 @@ func (r route) Wrap(funcs ...func(http.HandlerFunc) http.HandlerFunc) route {
 type Group struct {
 	Mux    *http.ServeMux
 	mwares []Middleware
-	routes []route
+	routes []Route
 }
 
 func NewGroup() *Group {
@@ -65,18 +88,24 @@ var (
 	errGroupUsed      = errors.New("want *route.Group not route.Group")
 )
 
-func what(t any) string {
-	return fmt.Sprintf(": (%T, %v)", t, t)
+// exitWithLog logs the error message and exits with code 0.
+func exitWithLog(msg string) {
+	_, file, line, _ := runtime.Caller(1) // Get caller info
+	_ = log.Output(3, file+":"+strconv.Itoa(line)+": "+msg)
+	os.Exit(0)
 }
 
-func wrap(h http.Handler) http.HandlerFunc {
-	if h == nil {
-		_ = log.Output(2, fmt.Sprintf("%s:nil http.Handler", fname()))
-		os.Exit(1)
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r)
-	}
+// exitWithError logs the error message and exits with code 1.
+func exitWithError(err error) {
+	_, file, line, _ := runtime.Caller(1) // Get caller info
+	_ = log.Output(3, file+":"+strconv.Itoa(line)+": "+err.Error())
+	os.Exit(1)
+}
+
+var exit func(error)
+
+func init() {
+	exit = exitWithError
 }
 
 func fname() string {
@@ -86,48 +115,35 @@ func fname() string {
 	return parts[len(parts)-1] // Extract only the function name
 }
 
-// exit enables testing of code that calls os.Exit
-var exit = func(code int) {
-	os.Exit(code)
-}
-
-func (g *Group) compose() *Group {
+func (g *Group) Routes() []Route {
 	for i := range g.routes {
 
-		// Reverse index to achieve first in first applied behavior.
+		// Reverse index to achieve first in first applied behaviour.
 		reverseIndex := len(g.routes) - 1 - i
-		hFunc := g.routes[reverseIndex].handlerFunc
-		path := g.routes[reverseIndex].path
-		if hFunc == nil {
+		handler := g.routes[reverseIndex].Handler
+		if handler == nil {
 			// nil values in nested middleware can be very tricky to deal so we
 			// get out fast and check everywhere.
-			_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilFunc))
-			exit(1)
+			exit(errNilFunc)
 		}
 
 		// Apply each middleware to our function
 		for i := range g.mwares {
 			// Reverse again
 			reverseIndexJ := len(g.mwares) - 1 - i
-			hFunc = g.mwares[reverseIndexJ](hFunc)
+			handler = g.mwares[reverseIndexJ](handler)
 
 			// Check for nil middleware output
-			if hFunc == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errFuncReturnNil))
-				exit(1)
+			if handler == nil {
+				exit(errFuncReturnNil)
 			}
 		}
 
-		if g.Mux == nil {
-			// No server just yet, we need to replace the function with its
-			// wrapped replacement.
-			g.routes[reverseIndex].handlerFunc = hFunc
-		} else {
-			// This is the final compilation, add the HandlerFunc to the server.
-			g.Mux.HandleFunc(path, hFunc)
-		}
+		// No server just yet, we need to replace the function with its
+		// wrapped replacement.
+		g.routes[reverseIndex].Handler = handler
 	}
-	return g
+	return g.routes
 }
 
 // Compile wraps all routes with the appropriate middleware and loads them all
@@ -136,100 +152,34 @@ func (g *Group) Compile() *http.ServeMux {
 	if g.Mux == nil {
 		g.Mux = &http.ServeMux{}
 	}
-	g = g.compose()
+	for _, route := range g.Routes() {
+		g.Mux.Handle(route.Path, route.Handler)
+	}
 	return g.Mux
 }
 
 // Wrap wraps all endpoints in a Group with its provided decorators, they are
 // applied in order, first in first out.
-func (g *Group) Wrap(mw ...any) *Group {
-
-	for _, obj := range mw {
-		switch t := obj.(type) {
-		case Middleware:
-			if t == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilMiddleware))
-				exit(1)
-			}
-			g.mwares = append(g.mwares, t)
-		case func(http.HandlerFunc) http.HandlerFunc:
-			g.mwares = append(g.mwares, t)
-		case http.Handler:
-			if t == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilHandler))
-				exit(1)
-			}
-			_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandlerUsed))
-			exit(1)
-		default:
-			_ = log.Output(2, fmt.Sprintf("%s:%s:%s", fname(), errSwitchDefault, what(t)))
-			exit(1)
-		}
+func (g *Group) Wrap(mw ...Middleware) *Group {
+	if mw == nil || len(mw) > 0 && mw[0] == nil {
+		exit(errNilMiddleware)
 	}
-
+	g.mwares = append(g.mwares, mw...)
 	return g
 }
 
 // Handle expects either *route.Group, or string http.Handler, string
 // http.HandlerFunc pairs. Middleware applied to subgroups remains exclusive to
 // the subgroup.
-func (g *Group) Handle(h ...any) *Group {
-	var path string
-	var offset int
-	for i, obj := range h {
+func (g *Group) Handle(h ...Router) *Group {
+	for _, obj := range h {
 		switch t := obj.(type) {
-		case route:
+		case Route:
 			g.routes = append(g.routes, t)
-			offset++
-		case Group:
-			_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errGroupUsed))
-			exit(1)
 		case *Group:
-			if t == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilGroup))
-				exit(1)
-			}
-			// Counting a group, we need to offset the modulo 2 calculation.
-			offset++
-			t = t.compose()
-			g.routes = append(g.routes, t.routes...)
-		case http.HandlerFunc:
-			if t == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilHandlerFunc))
-				exit(1)
-			}
-			if (i+offset)%2 != 1 {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
-				exit(1)
-			}
-			g.routes = append(g.routes, route{path, t})
-		case http.Handler:
-			if t == nil {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errNilHandler))
-				exit(1)
-			}
-			if (i+offset)%2 != 1 {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
-				exit(1)
-			}
-			g.routes = append(g.routes, route{path, wrap(t)})
-		case func(w http.ResponseWriter, r *http.Request):
-			if (i+offset)%2 != 1 {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
-				exit(1)
-			}
-			g.routes = append(g.routes, route{path, t})
-		// Test for string last, a typed string might implement ServeHTTP
-		case string:
-			// Strings must be first of a pair
-			if (i+offset)%2 != 0 {
-				_ = log.Output(2, fmt.Sprintf("%s:%s", fname(), errHandleFormat))
-				exit(1)
-			}
-			path = t
+			g.routes = append(g.routes, t.Routes()...)
 		default:
-			_ = log.Output(2, fmt.Sprintf("%s:%s:%s", fname(), errSwitchDefault, what(t)))
-			exit(1)
+			exit(fmt.Errorf("%T:%w", t, errSwitchDefault))
 		}
 	}
 	return g
